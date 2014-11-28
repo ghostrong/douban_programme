@@ -103,7 +103,7 @@ class DoubanProgramme(object):
             output_file = self.get_valid_filename(song_title, suffix)
             self.download_song(song_url, output_file)
 
-            print 'Down:', output_file
+            print 'Done:', output_file
 
 
 def main():
