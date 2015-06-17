@@ -7,6 +7,7 @@ http://music.douban.com/programmes/
 """
 
 
+import argparse
 import HTMLParser
 import json
 import os
@@ -22,15 +23,17 @@ class DoubanProgramme(object):
 
     def __init__(self, programme_id, output_path):
         self.programme_id = programme_id
-        self.output_path = unicode(output_path)
+        self.output_path = output_path
 
-    def get_song_url(self, song_id, ssid):
-        req_url = 'http://music.douban.com/j/songlist/get_song_url?sid=%s&ssid=%s' % (song_id, ssid)
-        r = urllib2.urlopen(req_url)
+    def _get_song_url(self, songid, ssid):
+        url = ('http://music.douban.com/j/songlist/get_song_url?'
+               'sid={0}&ssid={1}'.format(songid, ssid)
+              )
+        r = urllib2.urlopen(url)
         data = json.loads(r.read())
         return data.get('r', '')
 
-    def download_song(self, song_url, output_file, retry=5):
+    def _download_song(self, song_url, output_file, retry=5):
         # need several retrys due to the terrible network
         for i in xrange(retry):
             try:
@@ -39,82 +42,67 @@ class DoubanProgramme(object):
             except Exception as e:
                 content = None
 
-        if content:
-            with open(output_file, 'wb') as f:
-                f.write(content)
-            return True
+        if not content:
+            return False
+        with open(output_file, 'wb') as f:
+            f.write(content)
+        return True
 
-        return False
+    def _get_meta_infos(self):
+        """ Extract programme-title, song-list."""
 
-    def get_meta_infos(self):
-        """ Extract programme-title, song-list from the programme page.
-        """
-
-        p_url = 'http://music.douban.com/programme/%s' % self.programme_id
-        r = urllib2.urlopen(p_url)
+        purl = 'http://music.douban.com/programme/{0}'.format(self.programme_id)
+        r = urllib2.urlopen(purl)
         text = r.read()
 
-        self.pattern_item = re.compile(r'<div\s+class="song-item"(.+?)>', re.S)
-        self.pattern_meta = re.compile(r'data-title="(.+?)".*?data-songid="(\d+?)".*?data-ssid="(.+?)"', re.S)
-
         # extract programme_title
-        pattern_title = re.compile(r'<p\s+id="songlist-title">(.+?)</p>', re.S)
-        p_title = pattern_title.search(text)
-        if p_title:
-            _title = p_title.group(1).decode('utf8', 'ignore')
-            self.output_path = os.path.join(self.output_path, _title + unicode(self.programme_id))
+        ptitle_re = re.compile(r'id="songlist-title">(?P<ptitle>.+?)</', re.S)
+        ptitle = ptitle_re.search(text)
+        if ptitle:
+            ptitle = ptitle.group('ptitle')
         else:
-            self.output_path = os.path.join(self.output_path, unicode(self.programme_id))
+            ptitle = str(self.programme_id)
 
+        self.output_path = os.path.join(self.output_path, ptitle)
         if not os.path.isdir(self.output_path):
             os.makedirs(self.output_path)
 
-        meta_list = []
+        meta_re = re.compile(r'<div\s+class="song-item"\s.*?data-title="(?P<title>.+?)"'
+                             r'\s.*?data-songid="(?P<songid>\d+?)"'
+                             r'\s.*?data-ssid="(?P<ssid>.+?)".*?>', re.S
+                            )
+        matches = meta_re.findall(text)
         html_parser = HTMLParser.HTMLParser()
-        song_items = self.pattern_item.findall(text)
-        for _item in song_items:
-            _meta = self.pattern_meta.search(_item)
-            if _meta:
-                song_title = html_parser.unescape(_meta.group(1).decode('utf8', 'ignore'))
-                song_id = _meta.group(2)
-                ssid = _meta.group(3)
-                meta_list.append((song_title, song_id, ssid))
-
+        meta_list = [(html_parser.unescape(title), songid, ssid) for
+                     title, songid, ssid in matches]
         return meta_list
 
-    def get_valid_filename(self, song_title, suffix):
-        # unsafe chracters for some operating systems, maybe
+    def _get_valid_filename(self, title, songid, suffix):
+        # unsafe chracters for some operating systems. Maybe:)
         invalid = r'[\\/\'",?&#<>|`!@$%^*:]+'
-        name = re.sub(invalid, ' ', song_title)
-
-        while len(name) < 200:
-            output_file = os.path.join(self.output_path, name) + suffix
-            if not os.path.exists(output_file):
-                return output_file
-            name = name + '_'
-
-        return os.path.join(self.output_path, str(random.randint(1, 10000000))) + suffix
+        name = re.sub(invalid, '', title)[:50]
+        fname = '{0}_{1}{2}'.format(name, songid, suffix)
+        return os.path.join(self.output_path, fname)
 
     def start(self):
-        meta_list = self.get_meta_infos()
-        for song_title, song_id, ssid in meta_list:
-            song_url = self.get_song_url(song_id, ssid)
+        meta_list = self._get_meta_infos()
+        for title, songid, ssid in meta_list:
+            song_url = self._get_song_url(songid, ssid)
             suffix = os.path.splitext(song_url)[1]
-            output_file = self.get_valid_filename(song_title, suffix)
-            self.download_song(song_url, output_file)
-
-            print 'Done:', output_file
+            output_file = self._get_valid_filename(title, songid, suffix)
+            print 'Downloading... {0}'.format(title)
+            self._download_song(song_url, output_file)
 
 
 def main():
-    if len(sys.argv) < 3:
-        print '[1]douban_programme_id [2]output_path'
-        return
+    parser = argparse.ArgumentParser()
+    parser.add_argument('programme_id', type=int)
+    parser.add_argument('output_path', type=str,
+                        help='Path to contain the downloaded songs')
+    args = parser.parse_args()
 
-    programme_id = sys.argv[1]
-    output_path = sys.argv[2]
-    dp = DoubanProgramme(programme_id, output_path)
-    dp.start()
+    doupro = DoubanProgramme(args.programme_id, args.output_path)
+    doupro.start()
 
 
 if __name__ == '__main__':
